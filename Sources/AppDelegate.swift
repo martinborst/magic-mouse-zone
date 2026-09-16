@@ -6,6 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ScrollEngine.shared?.start()
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        ScrollEngine.shared?.shutdown()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }

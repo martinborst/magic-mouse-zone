@@ -53,6 +53,16 @@ final class ScrollEngine: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
+    func shutdown() {
+        permissionTimer?.invalidate()
+        permissionTimer = nil
+        touchMonitor.stop()
+        eventTap.stop()
+        tapRunning = false
+        state.clearFingers()
+        fingers = []
+    }
+
     func start() {
         guard !didStart else {
             refreshPermissionsAndTap()
@@ -114,16 +124,29 @@ final class ScrollEngine: ObservableObject {
             accessibilityGranted = granted
         }
         state.updateConfig(enabled: enabled, zone: zone, ignoreMultipleFingers: ignoreMultipleFingers)
+        if state.expireStaleFingers() {
+            fingers = []
+        }
         let login = SMAppService.mainApp.status == .enabled
         if login != launchAtLogin {
             launchAtLogin = login
         }
     }
 
+    nonisolated func handleMouseLost() {
+        state.clearFingers()
+        DispatchQueue.main.async { [weak self] in
+            self?.fingers = []
+            self?.mouseConnected = false
+            self?.deviceSummary = "Looking for a Magic Mouse…"
+        }
+    }
+
     nonisolated func handleTouches(_ touches: UnsafeMutablePointer<MTTouch>?, count: Int) {
         var dots: [FingerDot] = []
-        if let touches, count > 0 {
-            for i in 0..<count {
+        let n = min(max(count, 0), 20)
+        if let touches, n > 0 {
+            for i in 0..<n {
                 let touch = touches[i]
                 let stateValue = Int(touch.state)
                 guard (Int(MTTouchStateMakeTouch)...Int(MTTouchStateBreakTouch)).contains(stateValue) else {
@@ -194,6 +217,11 @@ final class ScrollEngine: ObservableObject {
 
 /// Thread-safe filter used from the CGEvent tap and Multitouch callbacks.
 final class FilterState: @unchecked Sendable {
+    private static let speedThreshold = 0.015
+    private static let recentTouchInterval: TimeInterval = 0.12
+    /// Magic Mouse frames stop immediately on power-off; leftover contacts must not keep swallowing scroll events.
+    private static let staleFingerInterval: TimeInterval = 0.25
+
     private let lock = NSLock()
     private var enabled = true
     private var ignoreMultipleFingers = true
@@ -219,16 +247,41 @@ final class FilterState: @unchecked Sendable {
         return zone.contains(x: x, y: y)
     }
 
+    func clearFingers() {
+        lock.lock()
+        fingers = []
+        lastFingerCount = 0
+        lastFingerTime = 0
+        inMagicMouseGesture = false
+        gestureAllowed = nil
+        lock.unlock()
+    }
+
+    @discardableResult
+    func expireStaleFingers() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !fingers.isEmpty else { return false }
+        let age = ProcessInfo.processInfo.systemUptime - lastFingerTime
+        guard age > Self.staleFingerInterval else { return false }
+        fingers = []
+        lastFingerCount = 0
+        inMagicMouseGesture = false
+        gestureAllowed = nil
+        return true
+    }
+
     @discardableResult
     func replaceFingers(_ fingers: [FingerDot]) -> Bool {
         lock.lock()
+        let becameEmpty = !self.fingers.isEmpty && fingers.isEmpty
         self.fingers = fingers
         if !fingers.isEmpty {
             lastFingerTime = ProcessInfo.processInfo.systemUptime
             lastFingerCount = fingers.count
         }
         let now = ProcessInfo.processInfo.systemUptime
-        let shouldPublish = now - lastUIUpdate >= 1.0 / 24.0
+        let shouldPublish = becameEmpty || now - lastUIUpdate >= 1.0 / 24.0
         if shouldPublish {
             lastUIUpdate = now
         }
@@ -237,16 +290,28 @@ final class FilterState: @unchecked Sendable {
     }
 
     func shouldAllow(_ event: CGEvent) -> Bool {
+        let expired = expireStaleFingers()
+        if expired {
+            DispatchQueue.main.async {
+                Task { @MainActor in
+                    ScrollEngine.shared?.fingers = []
+                }
+            }
+        }
+
         lock.lock()
         defer { lock.unlock() }
 
         guard enabled || ignoreMultipleFingers else { return true }
 
+        let now = ProcessInfo.processInfo.systemUptime
         let phase = event.getIntegerValueField(.scrollWheelEventScrollPhase)
         let momentum = event.getIntegerValueField(.scrollWheelEventMomentumPhase)
-        let recentlyTouched = ProcessInfo.processInfo.systemUptime - lastFingerTime < 0.12
+        let recentlyTouched = now - lastFingerTime < Self.recentTouchInterval
         let fingerCount = fingers.isEmpty && recentlyTouched ? lastFingerCount : fingers.count
-        let hasFingers = fingerCount > 0 || recentlyTouched
+        let hasFingers = fingerCount > 0
+        let mouseFingerMoving = fingers.contains { $0.speed >= Self.speedThreshold }
+            || (fingers.isEmpty && recentlyTouched)
 
         if momentum == 2 || momentum == 3 { // continue / end
             if inMagicMouseGesture, let allowed = gestureAllowed {
@@ -264,6 +329,11 @@ final class FilterState: @unchecked Sendable {
                 inMagicMouseGesture = false
                 gestureAllowed = nil
             }
+            return true
+        }
+
+        // Resting (or stuck) contacts must not block the trackpad or other devices.
+        if !mouseFingerMoving && !inMagicMouseGesture {
             return true
         }
 
@@ -303,7 +373,6 @@ final class FilterState: @unchecked Sendable {
         if fingers.isEmpty {
             return count >= 2
         }
-        let speedThreshold = 0.015
         if fingers.filter({ $0.speed >= speedThreshold }).count >= 2 {
             return true
         }
@@ -315,7 +384,6 @@ final class FilterState: @unchecked Sendable {
 
     private static func zoneAllowsScroll(fingers: [FingerDot], zone: ScrollZone) -> Bool {
         guard !fingers.isEmpty else { return true }
-        let speedThreshold = 0.015
         if let moving = fingers.max(by: { $0.speed < $1.speed }), moving.speed >= speedThreshold {
             return zone.contains(x: moving.x, y: moving.y)
         }

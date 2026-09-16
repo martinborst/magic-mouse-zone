@@ -3,24 +3,40 @@ import IOKit
 
 final class TouchMonitor {
     private var startedDeviceIDs = Set<UInt64>()
+    private var deviceList: CFArray?
     private var pollTimer: Timer?
     private let lock = NSLock()
 
     func start() {
         scanAndStart()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.scanAndStart()
         }
-        pollTimer?.tolerance = 0.5
+        pollTimer?.tolerance = 0.25
     }
 
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        stopStartedDevices()
+    }
+
+    /// Stops every Magic Mouse we previously started so macOS can generate scroll events again.
+    static func releaseAllMagicMice() {
+        let list = MTDeviceCreateList().takeRetainedValue()
+        let count = CFArrayGetCount(list)
+        for i in 0..<count {
+            let device = unsafeBitCast(CFArrayGetValueAtIndex(list, i), to: MTDeviceRef.self)
+            guard isMagicMouseDevice(device) else { continue }
+            MTUnregisterContactFrameCallback(device, touchFrameCallback)
+            if MTDeviceIsRunning(device) {
+                MTDeviceStop(device)
+            }
+        }
     }
 
     static func probeDescription() -> String {
-        let list = MTDeviceCreateList().takeUnretainedValue()
+        let list = MTDeviceCreateList().takeRetainedValue()
         let count = CFArrayGetCount(list)
         if count == 0 {
             return "No multitouch devices found. Is the Magic Mouse on and connected?"
@@ -34,27 +50,69 @@ final class TouchMonitor {
     }
 
     func scanAndStart() {
-        let list = MTDeviceCreateList().takeUnretainedValue()
+        let list = MTDeviceCreateList().takeRetainedValue()
         let count = CFArrayGetCount(list)
+        var liveIDs = Set<UInt64>()
         for i in 0..<count {
             let device = unsafeBitCast(CFArrayGetValueAtIndex(list, i), to: MTDeviceRef.self)
-            startIfMagicMouse(device)
+            guard Self.isMagicMouseDevice(device) else { continue }
+            liveIDs.insert(startOrRestart(device))
+        }
+
+        lock.lock()
+        let gone = startedDeviceIDs.subtracting(liveIDs)
+        startedDeviceIDs.subtract(gone)
+        deviceList = list
+        lock.unlock()
+
+        if liveIDs.isEmpty && !gone.isEmpty {
+            ScrollEngine.shared?.handleMouseLost()
         }
     }
 
-    private func startIfMagicMouse(_ device: MTDeviceRef) {
-        guard isMagicMouse(device) else { return }
+    private func stopStartedDevices() {
+        lock.lock()
+        let list = deviceList
+        deviceList = nil
+        startedDeviceIDs.removeAll()
+        lock.unlock()
 
+        guard let list else { return }
+        let count = CFArrayGetCount(list)
+        for i in 0..<count {
+            let device = unsafeBitCast(CFArrayGetValueAtIndex(list, i), to: MTDeviceRef.self)
+            guard Self.isMagicMouseDevice(device) else { continue }
+            MTUnregisterContactFrameCallback(device, touchFrameCallback)
+            if MTDeviceIsRunning(device) {
+                MTDeviceStop(device)
+            }
+        }
+    }
+
+    @discardableResult
+    private func startOrRestart(_ device: MTDeviceRef) -> UInt64 {
         var deviceID: UInt64 = 0
         MTDeviceGetDeviceID(device, &deviceID)
         if deviceID == 0 {
             deviceID = UInt64(bitPattern: Int64(Int(bitPattern: device)))
         }
 
+        let running = MTDeviceIsRunning(device)
+
         lock.lock()
         let already = startedDeviceIDs.contains(deviceID)
         lock.unlock()
-        if already { return }
+
+        if already && running {
+            return deviceID
+        }
+
+        if already {
+            MTUnregisterContactFrameCallback(device, touchFrameCallback)
+            if running {
+                MTDeviceStop(device)
+            }
+        }
 
         MTRegisterContactFrameCallback(device, touchFrameCallback)
         MTDeviceStart(device, 0)
@@ -71,9 +129,10 @@ final class TouchMonitor {
                 ScrollEngine.shared?.deviceSummary = "Magic Mouse connected · family \(family)"
             }
         }
+        return deviceID
     }
 
-    private func isMagicMouse(_ device: MTDeviceRef) -> Bool {
+    private static func isMagicMouseDevice(_ device: MTDeviceRef) -> Bool {
         var family: Int32 = 0
         MTDeviceGetFamilyID(device, &family)
 

@@ -55,7 +55,6 @@ void MTDeviceRelease(MTDeviceRef device);
 OSStatus MTDeviceStart(MTDeviceRef device, int options);
 OSStatus MTDeviceStop(MTDeviceRef device);
 bool MTDeviceIsRunning(MTDeviceRef device);
-bool MTDeviceIsValid(MTDeviceRef device);
 bool MTDeviceIsBuiltIn(MTDeviceRef device);
 bool MTDeviceIsOpaqueSurface(MTDeviceRef device);
 

@@ -10,6 +10,10 @@ struct MagicMouseZoneApp: App {
             fputs(TouchMonitor.probeDescription() + "\n", stdout)
             Darwin.exit(0)
         }
+        if CommandLine.arguments.contains("--stop-devices") {
+            TouchMonitor.releaseAllMagicMice()
+            Darwin.exit(0)
+        }
     }
 
     var body: some Scene {
