@@ -56,6 +56,7 @@ private struct MenuBarContent: View {
         }
         Divider()
         Button("Quit Magic Mouse Zone") {
+            engine.shutdown()
             NSApp.terminate(nil)
         }
     }

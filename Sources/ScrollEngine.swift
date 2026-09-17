@@ -32,6 +32,7 @@ final class ScrollEngine: ObservableObject {
     private let eventTap = ScrollEventTap.shared
     private var permissionTimer: Timer?
     private var didStart = false
+    private var didShutdown = false
 
     private let state = FilterState()
 
@@ -54,11 +55,13 @@ final class ScrollEngine: ObservableObject {
     }
 
     func shutdown() {
+        guard !didShutdown else { return }
+        didShutdown = true
         permissionTimer?.invalidate()
         permissionTimer = nil
-        touchMonitor.stop()
         eventTap.stop()
         tapRunning = false
+        touchMonitor.stop()
         state.clearFingers()
         fingers = []
     }
