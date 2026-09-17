@@ -10,8 +10,9 @@ struct MagicMouseZoneApp: App {
             fputs(TouchMonitor.probeDescription() + "\n", stdout)
             Darwin.exit(0)
         }
-        if CommandLine.arguments.contains("--stop-devices") {
-            TouchMonitor.releaseAllMagicMice()
+        if CommandLine.arguments.contains("--stop-devices")
+            || CommandLine.arguments.contains("--restore-scroll") {
+            MagicMouseRestorer.restoreAndWait()
             Darwin.exit(0)
         }
     }

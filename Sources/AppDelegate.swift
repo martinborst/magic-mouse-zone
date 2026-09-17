@@ -2,6 +2,8 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var didHandMouseBack = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         ProcessInfo.processInfo.disableSuddenTermination()
         NSApp.setActivationPolicy(.accessory)
@@ -9,22 +11,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        restoreNativeScrolling()
+        handMouseBackToSystem()
         return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        restoreNativeScrolling()
+        handMouseBackToSystem()
     }
 
-    /// `MTDeviceStart` hijacks the Magic Mouse digitizer. Stop the original device
-    /// refs even if SwiftUI has already released `ScrollEngine`.
-    private func restoreNativeScrolling() {
+    /// Drop our event tap, then reconnect the Magic Mouse so WindowServer
+    /// owns digitizer-to-scroll conversion again.
+    private func handMouseBackToSystem() {
         if let engine = ScrollEngine.shared {
             engine.shutdown()
         } else {
+            ScrollEventTap.shared.stop()
             TouchMonitor.releaseAllMagicMice()
         }
+        guard !didHandMouseBack else { return }
+        didHandMouseBack = true
+        MagicMouseRestorer.restoreAndWait()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

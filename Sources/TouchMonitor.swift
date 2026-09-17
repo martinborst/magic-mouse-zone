@@ -9,12 +9,15 @@ final class TouchMonitor {
     }
 
     private static let lock = NSLock()
+    /// Intentionally never cleared on quit. `MTDeviceStop` / releasing these refs
+    /// is what kills native Magic Mouse scrolling for the whole system.
     private static var started: [UInt64: StartedDevice] = [:]
-    private static var didWaitForHIDRelease = false
 
     private var pollTimer: Timer?
+    private static var isShuttingDown = false
 
     func start() {
+        Self.isShuttingDown = false
         scanAndStart()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.scanAndStart()
@@ -23,46 +26,21 @@ final class TouchMonitor {
     }
 
     func stop() {
+        Self.isShuttingDown = true
         pollTimer?.invalidate()
         pollTimer = nil
-        Self.releaseAllMagicMice()
+        Self.releaseCallbacks()
     }
 
     deinit {
         pollTimer?.invalidate()
-        Self.releaseAllMagicMice()
+        Self.releaseCallbacks()
     }
 
-    /// Stops every Magic Mouse we previously started so macOS can generate scroll events again.
+    /// Unregisters our touch callback. Does not start or stop the device.
     static func releaseAllMagicMice() {
-        let hadStarted: Bool = {
-            lock.lock()
-            defer { lock.unlock() }
-            return !started.isEmpty
-        }()
-        stopStartedDevices()
-
-        let list = MTDeviceCreateList().takeRetainedValue()
-        let count = CFArrayGetCount(list)
-        var stoppedFromList = false
-        for i in 0..<count {
-            let device = unsafeBitCast(CFArrayGetValueAtIndex(list, i), to: MTDeviceRef.self)
-            guard isMagicMouseDevice(device) else { continue }
-            stopDevice(device)
-            stoppedFromList = true
-        }
-
-        // MTDeviceStop is asynchronous in the HID stack; give it a moment before exit.
-        let shouldWait = hadStarted || stoppedFromList
-        lock.lock()
-        let alreadyWaited = didWaitForHIDRelease
-        if shouldWait {
-            didWaitForHIDRelease = true
-        }
-        lock.unlock()
-        if shouldWait && !alreadyWaited {
-            _ = CFRunLoopRunInMode(.defaultMode, 0.1, false)
-        }
+        isShuttingDown = true
+        releaseCallbacks()
     }
 
     static func probeDescription() -> String {
@@ -80,6 +58,7 @@ final class TouchMonitor {
     }
 
     func scanAndStart() {
+        guard !Self.isShuttingDown else { return }
         let list = MTDeviceCreateList().takeRetainedValue()
         let count = CFArrayGetCount(list)
         var liveIDs = Set<UInt64>()
@@ -91,7 +70,7 @@ final class TouchMonitor {
 
         let gone = Self.takeGoneDevices(liveIDs: liveIDs)
         for item in gone {
-            Self.stopDevice(item.device)
+            MTUnregisterContactFrameCallback(item.device, touchFrameCallback)
         }
 
         if liveIDs.isEmpty && !gone.isEmpty {
@@ -106,20 +85,13 @@ final class TouchMonitor {
         return staleIDs.compactMap { started.removeValue(forKey: $0) }
     }
 
-    private static func stopStartedDevices() {
+    private static func releaseCallbacks() {
         lock.lock()
         let devices = Array(started.values)
-        started.removeAll()
         lock.unlock()
-
         for item in devices {
-            stopDevice(item.device)
+            MTUnregisterContactFrameCallback(item.device, touchFrameCallback)
         }
-    }
-
-    private static func stopDevice(_ device: MTDeviceRef) {
-        MTUnregisterContactFrameCallback(device, touchFrameCallback)
-        MTDeviceStop(device)
     }
 
     @discardableResult
@@ -134,18 +106,14 @@ final class TouchMonitor {
         let existing = started[deviceID]
         lock.unlock()
 
-        if let existing {
-            if MTDeviceIsRunning(existing.device) {
-                return deviceID
-            }
-            stopDevice(existing.device)
-            lock.lock()
-            started.removeValue(forKey: deviceID)
-            lock.unlock()
+        if let existing, MTDeviceIsRunning(existing.device) {
+            return deviceID
         }
 
         MTRegisterContactFrameCallback(device, touchFrameCallback)
-        MTDeviceStart(device, 0)
+        if !MTDeviceIsRunning(device) {
+            MTDeviceStart(device, 0)
+        }
 
         lock.lock()
         started[deviceID] = StartedDevice(device: device, list: list)

@@ -34,5 +34,7 @@
 	<false/>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Magic Mouse Zone needs Accessibility access to ignore scrolling from fingers outside the zone you define.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Magic Mouse Zone reconnects your Magic Mouse when you quit so macOS can generate scrolling again.</string>
 </dict>
 </plist>

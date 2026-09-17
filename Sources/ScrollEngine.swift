@@ -115,6 +115,7 @@ final class ScrollEngine: ObservableObject {
     }
 
     func refreshPermissionsAndTap() {
+        guard !didShutdown else { return }
         var granted = Permissions.accessibilityGranted
         if !tapRunning {
             tapRunning = eventTap.start()

@@ -49,12 +49,14 @@ final class ScrollEventTap: @unchecked Sendable {
         runLoopSource = nil
         lock.unlock()
 
-        if let tap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
         if let source {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
+        // Leaving a live mach port behind lets WindowServer keep delivering
+        // scroll events into a dead tap, so the mouse appears to stop scrolling.
+        CFMachPortInvalidate(tap)
     }
 
     func setEnabled(_ enabled: Bool) {

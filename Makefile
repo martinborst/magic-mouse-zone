@@ -30,6 +30,7 @@ $(APP_BUNDLE): $(SRC) Sources/Bridging.h Sources/MultitouchSupport.h Resources/I
 		-framework AppKit \
 		-framework ApplicationServices \
 		-framework IOKit \
+		-framework IOBluetooth \
 		-framework ServiceManagement \
 		-framework Combine \
 		-F /System/Library/PrivateFrameworks \
